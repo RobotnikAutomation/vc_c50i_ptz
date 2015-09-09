@@ -100,6 +100,8 @@ public:
 	SerialDevice *serial;
 	string serial_port_;
 	int connected_;
+	int pan_, tilt_, zoom_;
+	robotnik_msgs::ptz current_state_;
 
 	enum Command {
     DELIM = 0x00, ///<Delimeter character
@@ -130,6 +132,35 @@ public:
     RESPONSE = 0xFE, ///<Packet header for response
     HEADER = 0xFF ///<Packet Header
   };
+
+	// the various error states that the camera can return
+	enum Error {
+		CAM_ERROR_NONE = 0x30, ///<No error
+		CAM_ERROR_BUSY = 0x31, ///<Camera busy, will not execute the command
+		CAM_ERROR_PARAM = 0x35, ///<Illegal parameters to function call
+		CAM_ERROR_MODE = 0x39,  ///<Not in host control mode
+		CAM_ERROR_UNKNOWN = 0xFF ///<Unknown error condition.  Should never happen
+	};
+
+	// Types for turning on and off the camera
+  enum Power {
+    POWER_OFF = 0,
+    POWER_ON = 1
+  };
+
+	// preset limits on movements.  Based on empirical data
+	enum Param {
+		MAX_PAN = 98,		// 875 units is max pan assignment
+		MIN_PAN = -98,		// -875 units is min pan assignment
+		MAX_TILT = 88,		// 790 units is max tilt assignment
+		MIN_TILT = -30,		// -267 units is min tilt assignment
+		MAX_PAN_SLEW = 90,		// 800 positions per sec (PPS)
+		MIN_PAN_SLEW = 1,		// 8 positions per sec (PPS)
+		MAX_TILT_SLEW = 69,		// 662 positions per sec (PPS)
+		MIN_TILT_SLEW = 1,		// 8 positions per sec (PPS)
+		MAX_ZOOM_OPTIC = 1960,
+		MIN_ZOOM = 0
+	};
 
 /*!	\fn VCC50iPtz::VCC50iPtz()
  * 	\brief Public constructor
@@ -254,6 +285,13 @@ int start(){
 	freq_diag_.clear();
 	running = true;
   this->open();
+
+	sendInit();
+	usleep(10000);
+
+  sendPowerOn();
+  usleep(10000);
+
 	return 0;
 }
 
@@ -374,17 +412,70 @@ int open()
 /*! \fn  void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &msg)
   * Receives ptz commands
 */
-void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &msg)
+void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &cmd)
 {
-	ROS_INFO("cmdPtzCommandCallback: Received commands: pan = %.2lf, tilt = %.2lf, zoom = %.2lf, relative = %d", msg->pan, msg->tilt, msg->zoom, msg->relative);
-  sendInit();
-	usleep(10000);
+	ROS_DEBUG("cmdPtzCommandCallback: Received commands: pan = %.2lf, tilt = %.2lf, zoom = %.2lf, relative = %d", cmd->pan, cmd->tilt, cmd->zoom, cmd->relative);
 
-  sendPowerOn();
-	usleep(10000);
+  // sendHome();              DEBUG
+  // usleep(10000);
 
-  sendHome();
-  usleep(10000);
+	robotnik_msgs::ptz to_send;
+  bool change_pan_tilt = false;
+  bool change_zoom = false;
+  to_send.pan = pan_;
+  to_send.tilt = tilt_;
+  to_send.zoom = zoom_;
+
+  // Check if the command is relative to the current position
+  if (cmd->relative)
+  {
+    if ( abs(cmd->pan) > PAN_THRESH)
+    {
+      to_send.pan = cmd->pan + pan_;
+      change_pan_tilt = true;
+    }
+    if ( abs(cmd->tilt) > TILT_THRESH)
+    {
+      to_send.tilt = cmd->tilt + tilt_;
+      change_pan_tilt = true;
+    }
+    if ( abs(cmd->zoom) > ZOOM_THRESH)
+    {
+      to_send.zoom = cmd->zoom + zoom_;
+      change_zoom = true;
+    }
+  }
+  else
+  {
+    if ( abs(cmd->pan - pan_) > PAN_THRESH)
+    {
+      to_send.pan = cmd->pan;
+      change_pan_tilt = true;
+    }
+    if ( abs(cmd->tilt - tilt_) > TILT_THRESH)
+    {
+      to_send.tilt = cmd->tilt;
+      change_pan_tilt = true;
+    }
+    if ( abs(cmd->zoom - zoom_) > ZOOM_THRESH)
+    {
+      to_send.zoom = cmd->zoom;
+      change_zoom = true;
+    }
+  }
+
+  if (change_pan_tilt)
+  {
+    sendAbsPanTilt(to_send.pan, to_send.tilt);
+  }
+  if (change_zoom)
+  {
+    //sendAbsZoom(to_send.zoom);
+  }
+
+  current_state_.pan = pan_;
+  current_state_.zoom = zoom_;
+  current_state_.tilt = tilt_;
 
 		return;
 }
@@ -407,7 +498,7 @@ int sendInit()
 		ROS_ERROR("cmdPtzCommandCallback::sendInit: Error sending message");
         }
 
-  	ROS_INFO("cmdPtzCommandCallback::sendInit: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+  	ROS_DEBUG("cmdPtzCommandCallback::sendInit: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 		return 0;
 }
 
@@ -428,7 +519,7 @@ int sendHome()
 		ROS_ERROR("cmdPtzCommandCallback::sendHome: Error sending message");
         }
 
-  	ROS_INFO("cmdPtzCommandCallback::sendHome: %X %X %X %X %X %X %d", command[0],command[1],command[2],command[3],command[4],command[5], written_bytes);
+  	ROS_DEBUG("cmdPtzCommandCallback::sendHome: %X %X %X %X %X %X %d", command[0],command[1],command[2],command[3],command[4],command[5], written_bytes);
 		return 0;
 }
 
@@ -451,8 +542,90 @@ int sendPowerOn()
 		ROS_ERROR("cmdPtzCommandCallback::sendPowerOn: Error sending message");
         }
 
-  	ROS_INFO("cmdPtzCommandCallback::sendPowerOn: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+  	ROS_DEBUG("cmdPtzCommandCallback::sendPowerOn: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 		return 0;
+}
+
+
+int sendAbsPanTilt(int pan, int tilt)
+{
+  char command[MAX_COMMAND_LENGTH];
+  int convpan, convtilt;
+  char buf[5];
+  int ppan, ttilt;
+	int written_bytes=0;
+
+  ppan = pan; ttilt = tilt;
+  if(pan < MIN_PAN)
+  {
+    ppan = (int)MIN_PAN;
+  }
+  else if(pan > MAX_PAN)
+  {
+      ppan = (int)MAX_PAN;
+  }
+
+  if (tilt > MAX_TILT)
+  {
+    ttilt = (int)MAX_TILT;
+  }
+  else if(tilt < MIN_TILT)
+  {
+      ttilt = (int)MIN_TILT;
+  }
+  //puts("Camera pan angle thresholded");
+
+  //puts("Camera tilt angle thresholded");
+
+  convpan = (int)floor(ppan/.1125) + 0x8000;
+  convtilt = (int)floor(ttilt/.1125) + 0x8000;
+  //   fprintf(stdout, "ppan: %d ttilt: %d conpan: %d contilt: %d\n",
+  // 	  ppan,ttilt,convpan,convtilt);
+  command[0] = HEADER;
+  command[1] = DEVICEID;
+  command[2] = DEVICEID;
+  command[3] = DELIM;
+  command[4] = PANTILT;
+  // pan position
+
+  snprintf((char *)buf,sizeof(buf), "%X", convpan);
+
+  command[5] = buf[0];
+  command[6] = buf[1];
+  command[7] = buf[2];
+  command[8] = buf[3];
+  // tilt position
+  snprintf((char *)buf,sizeof(buf), "%X", convtilt);
+  command[9]  = buf[0];
+  command[10] = buf[1];
+  command[11] = buf[2];
+  command[12] = buf[3];
+  command[13] = (unsigned char) FOOTER;
+
+	if(serial->WritePort(command, &written_bytes, 14) != SERIAL_OK)
+	{
+	  ROS_ERROR("cmdPtzCommandCallback::sendAbsPanTilt: Error sending message");
+  }
+
+  	ROS_DEBUG("cmdPtzCommandCallback::sendAbsPanTilt: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+
+  tilt_ = ttilt;
+  pan_ = ppan;
+
+
+  /*
+  if (bidirectional_com_)
+  {
+    return (receiveCommandAnswer(COMMAND_RESPONSE_BYTES));
+  }
+  else
+  {
+    usleep(SLEEP_TIME_USEC);
+    return 0;
+  }
+  */
+
+	return 0;
 }
 
 
