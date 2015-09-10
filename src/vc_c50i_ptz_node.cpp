@@ -194,7 +194,7 @@ VCC50iPtz(ros::NodeHandle h) : self_test_(), diagnostic_(),
 	// joint_state_pub_ = private_node_handle_.advertise<sensor_msgs::JointState>("/joint_states", 10);
 
 	// Subscribing
-    ptz_commands_sub = private_node_handle_.subscribe<robotnik_msgs::ptz>("command", 10, &VCC50iPtz::cmdPtzCommandCallback, this);
+    ptz_commands_sub = private_node_handle_.subscribe<robotnik_msgs::ptz>("/vc_c50i/ptz_command", 10, &VCC50iPtz::cmdPtzCommandCallback, this);
 
     // Component frequency diagnostics
     diagnostic_.setHardwareID("rscomponent");
@@ -667,17 +667,78 @@ int sendAbsZoom(int zoom)
   //return (receiveCommandAnswer(COMMAND_RESPONSE_BYTES));
 }
 
-/*! \fn  Service Stop
-  * Stop robot
-*/
-/*bool srvCallbackStop(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response)
+/*
+int P2OSPtz::getAbsPanTilt(int* pan, int* tilt)
 {
-    ROS_INFO("VCC50iPtz:: STOP");
+  unsigned char command[MAX_COMMAND_LENGTH];
+  unsigned char reply[MAX_REQUEST_LENGTH];
+  int reply_len;
+  char buf[4];
+  char byte;
+  unsigned int u_val;
+  int val;
+  int i;
 
-	this->stop();
+  command[0] = HEADER;
+  command[1] = DEVICEID;
+  command[2] = DEVICEID;
+  command[3] = DELIM;
+  command[4] = PANTILTREQ;
+  command[5] = FOOTER;
 
-	return true;
-}*/
+  if (sendRequest(command, 6, reply))
+    return(-1);
+  if (bidirectional_com_)
+  {
+    reply_len = receiveRequestAnswer(reply,14,0);
+  }
+  else
+  {
+    return 0;
+  }
+
+  if ( reply_len != 14 ) {
+    ROS_ERROR("Reply Len = %i; should equal 14", reply_len);
+    return -1;
+  }
+
+  // remove the ascii encoding, and put into 4-byte array
+  for (i = 0; i < 4; i++)
+  {
+    byte = reply[i+5];
+    if (byte < 0x40)
+      byte = byte - 0x30;
+    else
+      byte = byte - 'A' + 10;
+    buf[i] = byte;
+  }
+
+  // convert the 4-bytes into a number
+  u_val = buf[0] * 0x1000 + buf[1] * 0x100 + buf[2] * 0x10 + buf[3];
+
+  // convert the number to a value that's meaningful, based on camera specs
+  val = (int)(((int)u_val - (int)0x8000) * 0.1125);
+
+  // now set myPan to the response received for where the camera thinks it is
+  *pan = val;
+
+  // repeat the steps for the tilt value
+  for (i = 0; i < 4; i++)
+  {
+    byte = reply[i+9];
+    if (byte < 0x40)
+      byte = byte - 0x30;
+    else
+      byte = byte - 'A' + 10;
+    buf[i] = byte;
+  }
+  u_val = buf[0] * 0x1000 + buf[1] * 0x100 + buf[2] * 0x10 + buf[3];
+  val =(int)(((int)u_val  - (int)0x8000) * 0.1125);
+  *tilt = val;
+
+  return(0);
+}
+*/
 
 
 }; // class VCC50iPtz
