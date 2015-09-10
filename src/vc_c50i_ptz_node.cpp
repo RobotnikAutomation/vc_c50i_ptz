@@ -100,6 +100,7 @@ public:
 	SerialDevice *serial;
 	string serial_port_;
 	int connected_;
+  int max_zoom_;
 	int pan_, tilt_, zoom_;
 	robotnik_msgs::ptz current_state_;
 
@@ -168,6 +169,7 @@ public:
 VCC50iPtz(ros::NodeHandle h) : self_test_(), diagnostic_(),
   node_handle_(h), private_node_handle_("~"),
   desired_freq_(VCC50IPTZ_DEFAULT_FREQ),
+	max_zoom_(MAX_ZOOM_OPTIC),
   freq_diag_(diagnostic_updater::FrequencyStatusParam(&desired_freq_, &desired_freq_, 0.05)   ),
   command_freq_("Command frequency check", boost::bind(&VCC50iPtz::checkCommandSubscriber, this, _1))
 {
@@ -470,12 +472,14 @@ void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &cmd)
   }
   if (change_zoom)
   {
-    //sendAbsZoom(to_send.zoom);
+    sendAbsZoom(to_send.zoom);
   }
 
   current_state_.pan = pan_;
   current_state_.zoom = zoom_;
   current_state_.tilt = tilt_;
+
+	ROS_ERROR("VCC50iPtz::Zoom STATE to_send.zoom = %d", cmd->zoom);
 
 		return;
 }
@@ -495,10 +499,10 @@ int sendInit()
 
 	// Sends the message
 	if(serial->WritePort(command, &written_bytes, 7) != SERIAL_OK) {
-		ROS_ERROR("cmdPtzCommandCallback::sendInit: Error sending message");
+		ROS_ERROR("VCC50iPtz::sendInit: Error sending message");
         }
 
-  	ROS_DEBUG("cmdPtzCommandCallback::sendInit: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+  	ROS_DEBUG("VCC50iPtz::sendInit: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 		return 0;
 }
 
@@ -516,10 +520,10 @@ int sendHome()
 
 	// Sends the message
 	if(serial->WritePort(command, &written_bytes, 6) != SERIAL_OK) {
-		ROS_ERROR("cmdPtzCommandCallback::sendHome: Error sending message");
+		ROS_ERROR("VCC50iPtz::sendHome: Error sending message");
         }
 
-  	ROS_DEBUG("cmdPtzCommandCallback::sendHome: %X %X %X %X %X %X %d", command[0],command[1],command[2],command[3],command[4],command[5], written_bytes);
+  	ROS_DEBUG("VCC50iPtz::sendHome: %X %X %X %X %X %X %d", command[0],command[1],command[2],command[3],command[4],command[5], written_bytes);
 		return 0;
 }
 
@@ -539,10 +543,10 @@ int sendPowerOn()
 
 	// Sends the message
 	if(serial->WritePort(command, &written_bytes, 7) != SERIAL_OK) {
-		ROS_ERROR("cmdPtzCommandCallback::sendPowerOn: Error sending message");
+		ROS_ERROR("VCC50iPtz::sendPowerOn: Error sending message");
         }
 
-  	ROS_DEBUG("cmdPtzCommandCallback::sendPowerOn: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+  	ROS_DEBUG("VCC50iPtz::sendPowerOn: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 		return 0;
 }
 
@@ -602,33 +606,66 @@ int sendAbsPanTilt(int pan, int tilt)
   command[12] = buf[3];
   command[13] = (unsigned char) FOOTER;
 
-	if(serial->WritePort(command, &written_bytes, 14) != SERIAL_OK)
-	{
-	  ROS_ERROR("cmdPtzCommandCallback::sendAbsPanTilt: Error sending message");
-  }
-
-  	ROS_DEBUG("cmdPtzCommandCallback::sendAbsPanTilt: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
-
   tilt_ = ttilt;
   pan_ = ppan;
 
+	if(serial->WritePort(command, &written_bytes, 14) != SERIAL_OK)
+	{
+	  ROS_ERROR("VCC50iPtz::sendAbsPanTilt: Error sending message");
+  }
 
-  /*
-  if (bidirectional_com_)
-  {
-    return (receiveCommandAnswer(COMMAND_RESPONSE_BYTES));
-  }
-  else
-  {
-    usleep(SLEEP_TIME_USEC);
-    return 0;
-  }
-  */
+  ROS_DEBUG("VCC50iPtz::sendAbsPanTilt: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 
 	return 0;
 }
 
 
+int sendAbsZoom(int zoom)
+{
+  char command[MAX_COMMAND_LENGTH];
+  char buf[5];
+  int i;
+  int written_bytes=0;
+
+  if(zoom < 0)
+    zoom = 0;
+
+  else
+    if(zoom > max_zoom_){
+      zoom = max_zoom_;
+    }
+
+  command[0] = HEADER;
+  command[1] = DEVICEID;
+  command[2] = DEVICEID;
+  command[3] = DELIM;
+  command[4] = ZOOM;
+
+  sprintf((char *)buf, "%4X", zoom);
+
+  for (i=0;i<3;i++)
+    if (buf[i] == ' ')
+      buf[i] = '0';
+
+  // zoom position
+  command[5] = buf[0];
+  command[6] = buf[1];
+  command[7] = buf[2];
+  command[8] = buf[3];
+  command[9] = FOOTER;
+
+  zoom_ = zoom;
+
+	ROS_ERROR("VCC50iPtz::Zoom STATE zoom_ = %d", zoom_);
+
+	if(serial->WritePort(command, &written_bytes, 14) != SERIAL_OK)
+	{
+	  ROS_ERROR("VCC50iPtz::sendAbsZoom: Error sending message");
+  }
+
+  ROS_DEBUG("VCC50iPtz::sendAbsZoom: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
+  //return (receiveCommandAnswer(COMMAND_RESPONSE_BYTES));
+}
 
 /*! \fn  Service Stop
   * Stop robot
