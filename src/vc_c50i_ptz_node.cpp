@@ -36,6 +36,7 @@
 #include "diagnostic_updater/publisher.h"
 #include <vc_c50i_ptz/serial_device.h>
 #include <robotnik_msgs/ptz.h>
+#include <sensor_msgs/JointState.h>
 
 #define VCC50IPTZ_MIN_COMMAND_REC_FREQ 		1.0
 #define VCC50IPTZ_MAX_COMMAND_REC_FREQ 		10.0
@@ -87,7 +88,7 @@ public:
 	// Ros service stop
 	// ros::ServiceServer srv_stop_;
     // Publishers
-    // ros::Publisher joint_state_pub_;
+  ros::Publisher joint_state_pub_;
 	// Subscribers
 	ros::Subscriber ptz_commands_sub;
 
@@ -98,11 +99,14 @@ public:
 	double cycle_freq_;
 	//! Serial Device iface
 	SerialDevice *serial;
-	string serial_port_;
+	string serial_port_, frame_id_;
 	int connected_;
   int max_zoom_;
+	char reply_[14];
 	int pan_, tilt_, zoom_;
+	int readed_pan_, readed_tilt_;
 	robotnik_msgs::ptz current_state_;
+	sensor_msgs::JointState joint_states_;
 
 	enum Command {
     DELIM = 0x00, ///<Delimeter character
@@ -180,18 +184,25 @@ VCC50iPtz(ros::NodeHandle h) : self_test_(), diagnostic_(),
     private_node_handle_.param<double>("desired_freq", desired_freq_, VCC50IPTZ_DEFAULT_FREQ);
     private_node_handle_.param<string>("port", serial_port_, "/dev/ttyUSB0");
     private_node_handle_.param<int>("baudrate", baudrate_, VCC50I_TRANSFERRATE);
+	  private_node_handle_.param<string>("frame_id", frame_id_, "vc_c50i");
+
     // Self test
     self_test_.add("Connect Test", this, &VCC50iPtz::connectTest);
 
     // Component Setup
     // Opens/setups devices
 
+	  joint_states_.header.frame_id = frame_id_;
+		joint_states_.name.resize(2);
+    joint_states_.position.resize(2);
+    joint_states_.name[0] = "joint_camera_pan";
+		joint_states_.name[1] = "joint_camera_tilt";
 	/* EXAMPLES */
     // Services and Topics
     // Service to stop robot
 	// srv_stop_ = private_node_handle_.advertiseService("stop", &VCC50iPtz::srvCallbackStop, this);
 	// Publish joint states for wheel motion visualization
-	// joint_state_pub_ = private_node_handle_.advertise<sensor_msgs::JointState>("/joint_states", 10);
+	  joint_state_pub_ = private_node_handle_.advertise<sensor_msgs::JointState>("/joint_states", 10);
 
 	// Subscribing
     ptz_commands_sub = private_node_handle_.subscribe<robotnik_msgs::ptz>("/vc_c50i/ptz_command", 10, &VCC50iPtz::cmdPtzCommandCallback, this);
@@ -289,10 +300,19 @@ int start(){
   this->open();
 
 	sendInit();
-	usleep(10000);
+	usleep(SLEEP_TIME_USEC);
 
   sendPowerOn();
-  usleep(10000);
+  usleep(SLEEP_TIME_USEC);
+
+	sendHome();
+	usleep(SLEEP_TIME_USEC);
+
+	sendAbsPanTilt(0,0);
+  usleep(SLEEP_TIME_USEC);
+
+  sendAbsZoom(0);
+  usleep(SLEEP_TIME_USEC);
 
 	return 0;
 }
@@ -304,7 +324,6 @@ int start(){
 int stop(){
 
 }
-
 
 
 /*! \fn read_and_publish
@@ -319,36 +338,16 @@ int read_and_publish(){
 	if (diff>0.0) cycle_freq_ = 1.0 / diff;
 
 
-	int read_bytes=0;			//Number of received bytes
-	int ret = SERIAL_ERROR;
-	char cReadBuffer[64] = "\0";
-	// Read controller messages
-	if (serial->ReadPort(cReadBuffer, &read_bytes, 64)==SERIAL_ERROR) {
-			ROS_ERROR("VCC50iPtz::ReadControllerMsgs: Error reading port");
-			return SERIAL_ERROR;
-				}
-	for (int i=0;i<read_bytes;i++)
-	{
 
-	ROS_INFO("VCC50iPtz::read_and_publish: %X ", cReadBuffer[i]);
-	}
-	/*
-	while(read_bytes > 0){
-		ret = ProcessMsg(cReadBuffer); // returns ERROR or Number of bytes !
-		if(ret == ERROR) return ERROR;
-		else ret = OK;
-								if (serial->ReadPort(cReadBuffer, &read_bytes, 64)==ERROR) {
-			//ROS_ERROR("VCC50iPtz::read_and_publish: Error after 1st port read");
-			//return ERROR;
-									ret = OK;
-								}
-				}
-   */
+  getAbsPanTilt(&readed_pan_ ,&readed_tilt_);
 
-	/* EXAMPLE */
+
 	// Publish message
-    // joint_states_.header.stamp = ros::Time::now();
-	// joint_state_pub_.publish( joint_states_ );
+  joint_states_.header.stamp = ros::Time::now();
+	joint_states_.position[0] = -(readed_pan_ * 3.14159 / 180.0);
+	joint_states_.position[1] = -(readed_tilt_ * 3.14159 / 180.0);
+  joint_state_pub_.publish(joint_states_);
+
 }
 
 
@@ -361,29 +360,27 @@ bool spin()
 
     while (!(shutting_down_=ros::isShuttingDown())) // Using ros::isShuttingDown to avoid restarting the node during a shutdown.
     {
-		if (start() == 0)
-		{
-			while(ros::ok() && node_handle_.ok()) {
-
-				read_and_publish();
-
-				self_test_.checkTest();
-
-				diagnostic_.update();
-
-				ros::spinOnce();
-				r.sleep();
-			}
-
-		   ROS_INFO("VCC50iPtz::spin - END OF ros::ok() !!!");
-	   } else {
-		   // No need for diagnostic here since a broadcast occurs in start
-		   // when there is an error.
-		   usleep(1000000);
-		   self_test_.checkTest();
-		   ros::spinOnce();
-	  }
-   }
+	   	if (start() == 0)
+		  {
+		     while(ros::ok() && node_handle_.ok())
+			   {
+				    read_and_publish();
+			  	  self_test_.checkTest();
+				    diagnostic_.update();
+			  	  ros::spinOnce();
+			  	  r.sleep();
+			   }
+		  	 ROS_INFO("VCC50iPtz::spin - END OF ros::ok() !!!");
+	     }
+		   else
+		   {
+		     // No need for diagnostic here since a broadcast occurs in start
+		     // when there is an error.
+		     usleep(1000000);
+		     self_test_.checkTest();
+		     ros::spinOnce();
+	     }
+    }
 
    return true;
 }
@@ -418,8 +415,6 @@ void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &cmd)
 {
 	ROS_DEBUG("cmdPtzCommandCallback: Received commands: pan = %.2lf, tilt = %.2lf, zoom = %.2lf, relative = %d", cmd->pan, cmd->tilt, cmd->zoom, cmd->relative);
 
-  // sendHome();              DEBUG
-  // usleep(10000);
 
 	robotnik_msgs::ptz to_send;
   bool change_pan_tilt = false;
@@ -479,7 +474,8 @@ void cmdPtzCommandCallback(const robotnik_msgs::ptz::ConstPtr &cmd)
   current_state_.zoom = zoom_;
   current_state_.tilt = tilt_;
 
-	ROS_ERROR("VCC50iPtz::Zoom STATE to_send.zoom = %d", cmd->zoom);
+
+
 
 		return;
 }
@@ -527,7 +523,6 @@ int sendHome()
 		return 0;
 }
 
-
 int sendPowerOn()
 {
   char command[MAX_COMMAND_LENGTH];
@@ -549,7 +544,6 @@ int sendPowerOn()
   	ROS_DEBUG("VCC50iPtz::sendPowerOn: %X %X %X %X %X %X %X  %d", command[0],command[1],command[2],command[3],command[4],command[5],command[6], written_bytes);
 		return 0;
 }
-
 
 int sendAbsPanTilt(int pan, int tilt)
 {
@@ -619,7 +613,6 @@ int sendAbsPanTilt(int pan, int tilt)
 	return 0;
 }
 
-
 int sendAbsZoom(int zoom)
 {
   char command[MAX_COMMAND_LENGTH];
@@ -667,17 +660,20 @@ int sendAbsZoom(int zoom)
   //return (receiveCommandAnswer(COMMAND_RESPONSE_BYTES));
 }
 
-/*
-int P2OSPtz::getAbsPanTilt(int* pan, int* tilt)
+int getAbsPanTilt(int* pan, int* tilt)
 {
-  unsigned char command[MAX_COMMAND_LENGTH];
-  unsigned char reply[MAX_REQUEST_LENGTH];
+
+	char command[MAX_COMMAND_LENGTH];
+
   int reply_len;
   char buf[4];
+	char cReadBuffer[64];
   char byte;
   unsigned int u_val;
   int val;
   int i;
+	int written_bytes;
+	int ret = SERIAL_ERROR;
 
   command[0] = HEADER;
   command[1] = DEVICEID;
@@ -686,26 +682,46 @@ int P2OSPtz::getAbsPanTilt(int* pan, int* tilt)
   command[4] = PANTILTREQ;
   command[5] = FOOTER;
 
-  if (sendRequest(command, 6, reply))
-    return(-1);
-  if (bidirectional_com_)
-  {
-    reply_len = receiveRequestAnswer(reply,14,0);
-  }
-  else
-  {
-    return 0;
+	if(serial->WritePort(command, &written_bytes, 6) != SERIAL_OK)
+	{
+				ROS_ERROR("VCC50iPtz::getAbsPanTilt Error sending message");
   }
 
-  if ( reply_len != 14 ) {
-    ROS_ERROR("Reply Len = %i; should equal 14", reply_len);
-    return -1;
-  }
+
+
+
+	// Read controller messages
+
+
+	if (serial->ReadPort(cReadBuffer, &reply_len, 64)==SERIAL_ERROR)
+	{
+				ROS_ERROR("VCC50iPtz::getAbsPanTilt: Error reading.");
+				return SERIAL_ERROR;
+	}
+
+
+
+
+	for (int i=0;i<reply_len;i++)
+	{
+		if (cReadBuffer[i]==(char)RESPONSE && cReadBuffer[i+13]==(char)FOOTER)
+		{
+			for (int j=0;j<i+14;j++)
+			{
+				reply_[j]=cReadBuffer[j+i];
+			}
+		}
+
+	}
+
+
+	//ROS_INFO("VCC50iPtz::getAbsPanTilt: reply_: %X %X %X %X %X %X %X %X %X %X %X %X %X %X ----- %d", reply_[0],reply_[1],reply_[2],reply_[3],reply_[4],reply_[5],reply_[6],reply_[7],reply_[8],reply_[9],reply_[10],reply_[11],reply_[12],reply_[13],reply_len);
+
 
   // remove the ascii encoding, and put into 4-byte array
   for (i = 0; i < 4; i++)
   {
-    byte = reply[i+5];
+    byte = reply_[i+5];
     if (byte < 0x40)
       byte = byte - 0x30;
     else
@@ -722,10 +738,14 @@ int P2OSPtz::getAbsPanTilt(int* pan, int* tilt)
   // now set myPan to the response received for where the camera thinks it is
   *pan = val;
 
+
+	ROS_DEBUG("VCC50iPtz::getAbsPanTilt:     PAN:  %d ", val);
+
   // repeat the steps for the tilt value
-  for (i = 0; i < 4; i++)
+
+	for (i = 0; i < 4; i++)
   {
-    byte = reply[i+9];
+    byte = reply_[i+9];
     if (byte < 0x40)
       byte = byte - 0x30;
     else
@@ -736,9 +756,11 @@ int P2OSPtz::getAbsPanTilt(int* pan, int* tilt)
   val =(int)(((int)u_val  - (int)0x8000) * 0.1125);
   *tilt = val;
 
+	ROS_DEBUG("VCC50iPtz::getAbsPanTilt:     TILT: %d ", val);
+
   return(0);
 }
-*/
+
 
 
 }; // class VCC50iPtz
