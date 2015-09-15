@@ -4,10 +4,12 @@
   <arg name="enable_theora" default="0" />
   <arg name="enable_ptz" default="1" />
   <arg name="enable_ptz_teleop" default="1" />
+  <arg name="port" default="/dev/ttyS0" />
 
 
 <node pkg="vc_c50i_ptz" type="vc_c50i_ptz_node" name="$(arg camera_name)_ptz_node" if="$(arg enable_ptz)" output="screen">
       <remap from="/$(arg camera_name)/ptz_command" to="/axis_camera/ptz_command" />
+      <param name="port" value="$(arg port)" />
 </node>
 
   <group ns="$(arg camera_name)">
